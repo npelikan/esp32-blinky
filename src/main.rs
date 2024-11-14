@@ -78,6 +78,7 @@ fn main() -> Result<()> {
     };
 
     let mut led = PinDriver::output(pins.gpio2).unwrap();
+    let mut p15 = PinDriver::output(pins.gpio23).unwrap();
 
     // 1. Create a client with default configuration and empty handler
     // ANCHOR: mqtt_client
@@ -93,10 +94,12 @@ fn main() -> Result<()> {
                         msg if msg.contains("ON") => {
                             info!("Turning LED ON");
                             led.set_high().unwrap();
+                            p15.set_high().unwrap();
                         }
                         msg if msg.contains("OFF") => {
                             info!("Turning LED OFF"); 
                             led.set_low().unwrap();
+                            p15.set_low().unwrap();
                         }
                         _ => info!("Unknown command!"),
                     }
@@ -114,6 +117,13 @@ fn main() -> Result<()> {
     client.subscribe(MQTT_TOPIC, QoS::AtLeastOnce)?;
 
     loop {
-        sleep(Duration::from_secs(1));
+        sleep(Duration::from_secs(30));
+        let ap_info = wifi.scan();
+        
+        for x in ap_info? {
+            let wifi_payload = format!("SSID: {}, strength: {}", x.ssid, x.signal_strength);
+            client.publish(MQTT_TOPIC, QoS::AtLeastOnce, true, wifi_payload.as_bytes())?;
+        }
+
     }
 }
