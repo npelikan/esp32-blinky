@@ -1,17 +1,24 @@
-//! MQTT blocking client example which subscribes to an internet MQTT server and then sends
-//! and receives events in its own topic.
-
-use core::time::Duration;
-
-use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::hal::peripherals::Peripherals;
-use esp_idf_svc::mqtt::client::*;
-use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::sys::EspError;
+use anyhow::Result;
+use embedded_hal::delay::DelayNs;
+use embedded_svc::mqtt::client::{
+    EventPayload::Error, EventPayload::Received, QoS,
+};
+use esp_idf_hal::gpio::PinDriver;
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    hal::{
+        delay,
+        prelude::*
+        },
+    mqtt::client::{EspMqttClient, MqttClientConfiguration},
+    nvs::EspDefaultNvsPartition,
+};
+use esp_idf_sys::EspError;
+use log::{error, info, warn};
 use esp_idf_svc::wifi::*;
-use esp_idf_svc::hal::gpio::*;
+use std::{thread::sleep, time::Duration};
 
-use log::*;
+const UUID: &str = "esp32-dev";
 
 const SSID: &str = env!("WIFI_SSID");
 const PASSWORD: &str = env!("WIFI_PASS");
@@ -20,127 +27,27 @@ const MQTT_URL: &str = "mqtt://192.168.1.174:1883";
 const MQTT_CLIENT_ID: &str = "esp-mqtt";
 const MQTT_TOPIC: &str = "esp/led";
 
-fn main() {
+
+fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
 
-    let sys_loop = EspSystemEventLoop::take().unwrap();
+    let peripherals = Peripherals::take().unwrap();
+    let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
-    let peripherals = Peripherals::take().unwrap();
+    // Connect to the Wi-Fi network
+    // let _wifi: Result<EspWifi, EspError> = wifi_create(
+    //     SSID,
+    //     PASSWORD,
+    //     &sysloop,
+    //     &nvs,
+    // );
 
-    let _wifi = wifi_create(&sys_loop, &nvs).unwrap();
+    info!("Connecting to WiFi");
 
-    let (mut client, mut conn) = mqtt_create(MQTT_URL, MQTT_CLIENT_ID).unwrap();
-
-    run(&mut client, &mut conn, MQTT_TOPIC, peripherals).unwrap();
-}
-
-fn run(
-    client: &mut EspMqttClient<'_>,
-    connection: &mut EspMqttConnection,
-    topic: &str,
-    peripherals: Peripherals,
-) -> Result<(), EspError> {
-
-    let mut led = PinDriver::output(peripherals.pins.gpio2).unwrap();
-
-    std::thread::scope(|s| {
-        info!("About to start the MQTT client");
-
-        // Need to immediately start pumping the connection for messages, or else subscribe() and publish() below will not work
-        // Note that when using the alternative constructor - `EspMqttClient::new_cb` - you don't need to
-        // spawn a new thread, as the messages will be pumped with a backpressure into the callback you provide.
-        // Yet, you still need to efficiently process each message in the callback without blocking for too long.
-        //
-        // Note also that if you go to http://tools.emqx.io/ and then connect and send a message to topic
-        // "esp-mqtt-demo", the client configured here should receive it.
-        std::thread::Builder::new()
-            .stack_size(6000)
-            .spawn_scoped(s, move || {
-                info!("MQTT Listening for messages");
-
-                while let Ok(msg) = connection.next(){
-                    let msg_payload = msg.payload();
-
-                    match msg_payload {
-                        EventPayload::Received {data, ..} => {
-                            let parsed_string = String::from_utf8(data.to_vec());
-                            match parsed_string.expect("Unexpected Failure").to_uppercase().as_str() {
-                                msg if msg.contains("ON") => {
-                                    info!("Turning LED ON");
-                                    led.set_high().unwrap();
-                                }
-                                msg if msg.contains("OFF") => {
-                                    info!("Turning LED OFF");
-                                    led.set_low().unwrap();
-                                }
-                                _ => info!("Unknown command!"),
-                            }
-                        }
-                        _ =>  info!("MQTT Message: {:?}", msg_payload)
-
-                    }
-                }
-
-                info!("Connection closed");
-            })
-            .unwrap();
-
-        loop {
-            if let Err(e) = client.subscribe(topic, QoS::AtMostOnce) {
-                error!("Failed to subscribe to topic \"{topic}\": {e}, retrying...");
-
-                // Re-try in 0.5s
-                std::thread::sleep(Duration::from_millis(500));
-
-                continue;
-            }
-
-            info!("Subscribed to topic \"{topic}\"");
-
-            // Just to give a chance of our connection to get even the first published message
-            std::thread::sleep(Duration::from_millis(500));
-
-            let payload = "Hello from esp-mqtt-demo!";
-
-            loop {
-                client.enqueue(topic, QoS::AtMostOnce, false, payload.as_bytes())?;
-
-                info!("Published \"{payload}\" to topic \"{topic}\"");
-
-                let sleep_secs = 2;
-
-                info!("Now sleeping for {sleep_secs}s...");
-                std::thread::sleep(Duration::from_secs(sleep_secs));
-            }
-        }
-    })
-}
-
-fn mqtt_create(
-    url: &str,
-    client_id: &str,
-) -> Result<(EspMqttClient<'static>, EspMqttConnection), EspError> {
-    let (mqtt_client, mqtt_conn) = EspMqttClient::new(
-        url,
-        &MqttClientConfiguration {
-            client_id: Some(client_id),
-            ..Default::default()
-        },
-    )?;
-
-    Ok((mqtt_client, mqtt_conn))
-}
-
-fn wifi_create(
-    sys_loop: &EspSystemEventLoop,
-    nvs: &EspDefaultNvsPartition,
-) -> Result<EspWifi<'static>, EspError> {
-    let peripherals = Peripherals::take()?;
-
-    let mut esp_wifi = EspWifi::new(peripherals.modem, sys_loop.clone(), Some(nvs.clone()))?;
-    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sys_loop.clone())?;
+    let mut esp_wifi = EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs.clone()))?;
+    let mut wifi = BlockingWifi::wrap(&mut esp_wifi, sysloop.clone())?;
 
     wifi.set_configuration(&Configuration::Client(ClientConfiguration {
         ssid: SSID.try_into().unwrap(),
@@ -157,5 +64,56 @@ fn wifi_create(
     wifi.wait_netif_up()?;
     info!("Wifi netif up");
 
-    Ok(esp_wifi)
+    info!("Our UUID is:");
+    info!("{}", UUID);
+
+    let pins = peripherals.pins;
+    let mut delay = delay::Ets;
+
+    delay.delay_ms(3000);
+
+    let mqtt_config = MqttClientConfiguration {
+        client_id : Some(MQTT_CLIENT_ID),
+        ..Default::default()
+    };
+
+    let mut led = PinDriver::output(pins.gpio2).unwrap();
+
+    // 1. Create a client with default configuration and empty handler
+    // ANCHOR: mqtt_client
+    let mut client =
+        EspMqttClient::new_cb(
+            &MQTT_URL,
+            &mqtt_config,
+            move |message_event| match message_event.payload() {
+                Received { data, .. } => {
+                    info!("{:?}", data);
+                    let parsed_string = String::from_utf8(data.to_vec());
+                    match parsed_string.expect("Unexpected Failure").to_uppercase().as_str() {
+                        msg if msg.contains("ON") => {
+                            info!("Turning LED ON");
+                            led.set_high().unwrap();
+                        }
+                        msg if msg.contains("OFF") => {
+                            info!("Turning LED OFF"); 
+                            led.set_low().unwrap();
+                        }
+                        _ => info!("Unknown command!"),
+                    }
+                },
+                Error(e) => warn!("Received error from MQTT: {:?}", e),
+                _ => info!("Received from MQTT: {:?}", message_event.payload()),
+            },
+        )?;
+    // ANCHOR_END: mqtt_client
+
+    // 2. publish an empty hello message
+    let payload: &[u8] = &[];
+    client.publish(MQTT_TOPIC, QoS::AtLeastOnce, true, payload)?;
+
+    client.subscribe(MQTT_TOPIC, QoS::AtLeastOnce)?;
+
+    loop {
+        sleep(Duration::from_secs(1));
+    }
 }
