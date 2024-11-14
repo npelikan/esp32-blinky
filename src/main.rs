@@ -28,21 +28,23 @@ fn main() {
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
     let peripherals = Peripherals::take().unwrap();
-    let led = PinDriver::output(peripherals.pins.gpio2).unwrap();
 
     let _wifi = wifi_create(&sys_loop, &nvs).unwrap();
 
     let (mut client, mut conn) = mqtt_create(MQTT_URL, MQTT_CLIENT_ID).unwrap();
 
-    run(&mut client, &mut conn, MQTT_TOPIC, led).unwrap();
+    run(&mut client, &mut conn, MQTT_TOPIC, peripherals).unwrap();
 }
 
 fn run(
     client: &mut EspMqttClient<'_>,
     connection: &mut EspMqttConnection,
     topic: &str,
-    mut led: PinDriver<Gpio2, Output>,
+    peripherals: Peripherals,
 ) -> Result<(), EspError> {
+
+    let mut led = PinDriver::output(peripherals.pins.gpio2).unwrap();
+
     std::thread::scope(|s| {
         info!("About to start the MQTT client");
 
