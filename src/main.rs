@@ -36,14 +36,6 @@ fn main() -> Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
     let nvs = EspDefaultNvsPartition::take().unwrap();
 
-    // Connect to the Wi-Fi network
-    // let _wifi: Result<EspWifi, EspError> = wifi_create(
-    //     SSID,
-    //     PASSWORD,
-    //     &sysloop,
-    //     &nvs,
-    // );
-
     info!("Connecting to WiFi");
 
     let mut esp_wifi = EspWifi::new(peripherals.modem, sysloop.clone(), Some(nvs.clone()))?;
@@ -78,7 +70,6 @@ fn main() -> Result<()> {
     };
 
     let mut led = PinDriver::output(pins.gpio2).unwrap();
-    let mut p15 = PinDriver::output(pins.gpio23).unwrap();
 
     // 1. Create a client with default configuration and empty handler
     // ANCHOR: mqtt_client
@@ -94,12 +85,10 @@ fn main() -> Result<()> {
                         msg if msg.contains("ON") => {
                             info!("Turning LED ON");
                             led.set_high().unwrap();
-                            p15.set_high().unwrap();
                         }
                         msg if msg.contains("OFF") => {
                             info!("Turning LED OFF"); 
                             led.set_low().unwrap();
-                            p15.set_low().unwrap();
                         }
                         _ => info!("Unknown command!"),
                     }
@@ -117,7 +106,7 @@ fn main() -> Result<()> {
     client.subscribe(MQTT_TOPIC, QoS::AtLeastOnce)?;
 
     loop {
-        sleep(Duration::from_secs(30));
+        sleep(Duration::from_secs(60));
         let ap_info = wifi.scan();
         
         for x in ap_info? {
