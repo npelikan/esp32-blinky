@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     client.subscribe(MQTT_TOPIC, QoS::AtLeastOnce)?;
 
     loop {
-        sleep(Duration::from_secs(60));
+        sleep(Duration::from_secs(300));
         let ap_info = wifi.scan();
         
         for x in ap_info? {
